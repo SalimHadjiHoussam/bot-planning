@@ -1,189 +1,266 @@
 import os
+import re
+import json
 import time
 import threading
 import datetime
+
 import requests
 import pandas as pd
+import schedule
 from flask import Flask
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 EXCEL_PATH = "planning.xlsx"
+USERS_FILE = "users.json"
+TIMEZONE = ZoneInfo("Europe/Paris")
+REMINDER_HOURS = 20
 
-@app.route('/')
+
+def maintenant():
+    return datetime.datetime.now(TIMEZONE)
+
+
+@app.route("/")
 def home():
-    return "Bot Planning en ligne !"
+    return {"status": "online", "message": "Bot Planning Telegram en ligne", "telegram": bool(TOKEN)}
+
+
+@app.route("/health")
+def health():
+    return {"status": "ok", "time": maintenant().strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def charger_utilisateurs():
+    if not os.path.exists(USERS_FILE):
+        return []
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"Erreur lecture users.json : {e}")
+        return []
+
+
+def sauvegarder_utilisateurs(utilisateurs):
+    try:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(utilisateurs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Erreur sauvegarde utilisateurs : {e}")
+
+
+def ajouter_utilisateur(chat_id):
+    utilisateurs = charger_utilisateurs()
+    chat_id = str(chat_id)
+    if chat_id not in utilisateurs:
+        utilisateurs.append(chat_id)
+        sauvegarder_utilisateurs(utilisateurs)
+        print(f"Nouvel utilisateur enregistré : {chat_id}")
+
+
+def verifier_telegram():
+    if not TOKEN:
+        print("TELEGRAM_TOKEN introuvable")
+        return False
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getMe", timeout=15)
+        data = r.json()
+        if data.get("ok"):
+            print("Bot connecté : @" + data["result"].get("username", "inconnu"))
+            return True
+        print("Telegram refuse le token :", data)
+    except Exception as e:
+        print("Erreur connexion Telegram :", e)
+    return False
+
 
 def envoyer_message(chat_id, texte):
     if not TOKEN or not chat_id:
-        return
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": texte, "parse_mode": "Markdown"}
+        print("TOKEN ou chat_id manquant")
+        return False
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": texte, "parse_mode": "Markdown"},
+            timeout=20,
+        )
+        data = r.json()
+        if data.get("ok"):
+            print(f"Message envoyé à {chat_id}")
+            return True
+        print("Erreur Telegram :", data)
     except Exception as e:
-        print(f"Erreur envoi message : {e}")
+        print("Erreur envoi Telegram :", e)
+    return False
+
 
 def charger_cours_du_jour(date_cible):
-    """Extrait tous les cours de la date donnée depuis le fichier Excel."""
     if not os.path.exists(EXCEL_PATH):
-        return "⚠️ Le fichier `planning.xlsx` est introuvable sur le serveur."
+        return "Le fichier planning.xlsx est introuvable sur le serveur."
 
     try:
-        df = pd.read_excel(EXCEL_PATH, sheet_name='Semestre 1 - P1 - P2')
-        
-        # Trouver la ligne de la semaine correspondante
-        ligne_semaine = None
-        for idx in range(2, len(df)):
-            cell_val = str(df.iloc[idx, 0])
-            if "au" in cell_val:
+        # On lit la première feuille par défaut pour rester compatible avec ton ancien fichier.
+        df = pd.read_excel(EXCEL_PATH, header=None)
+    except Exception as e:
+        return f"Impossible de lire le planning.xlsx : {e}"
+
+    pattern = re.compile(r"(\d{2}/\d{2}/\d{2})\s+au\s+(\d{2}/\d{2}/\d{2})")
+    ligne_semaine = None
+
+    for idx in range(len(df)):
+        for col in range(df.shape[1]):
+            val = str(df.iloc[idx, col])
+            match = pattern.search(val)
+            if match:
                 try:
-                    dates_str = cell_val.split('\n')[-1] if '\n' in cell_val else cell_val
-                    debut_str, fin_str = dates_str.split(' au ')
-                    debut = datetime.datetime.strptime(debut_str.strip(), "%d/%m/%y").date()
-                    fin = datetime.datetime.strptime(fin_str.strip(), "%d/%m/%y").date()
+                    debut = datetime.datetime.strptime(match.group(1), "%d/%m/%y").date()
+                    fin = datetime.datetime.strptime(match.group(2), "%d/%m/%y").date()
                     if debut <= date_cible <= fin:
                         ligne_semaine = idx
                         break
-                except Exception:
+                except ValueError:
+                    pass
+        if ligne_semaine is not None:
+            break
+
+    if ligne_semaine is None:
+        return f"Aucun planning trouvé pour le {date_cible.strftime('%d/%m/%Y')}."
+
+    # Pour conserver la logique de ton planning actuel, on récupère les cellules non vides
+    # de la ligne de la semaine. Cela évite de dépendre d'indices de colonnes fragiles.
+    cours = []
+    for col in range(df.shape[1]):
+        valeur = df.iloc[ligne_semaine, col]
+        if pd.notna(valeur):
+            texte = str(valeur).strip()
+            if texte and texte.lower() != "nan":
+                cours.append(texte)
+
+    jour = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"][date_cible.weekday()]
+
+    if date_cible.weekday() >= 5:
+        return f"Pas de cours prévu le {jour} {date_cible.strftime('%d/%m/%Y')}. Bon week-end !"
+
+    if not cours:
+        return f"Aucun cours trouvé pour le {jour} {date_cible.strftime('%d/%m/%Y')}."
+
+    return f"📅 *Planning du {jour} {date_cible.strftime('%d/%m/%Y')}*\n\n" + "\n\n━━━━━━━━━━━━━━\n\n".join(cours)
+
+
+def traiter_commande(chat_id, texte):
+    texte = texte.strip().lower()
+    ajouter_utilisateur(chat_id)
+    today = maintenant().date()
+
+    if texte.startswith("/start"):
+        envoyer_message(chat_id, "👋 *Bienvenue sur le Bot Planning !*\n\n📅 /planning : planning du jour\n➡️ /demain : planning de demain\n🔔 /rappel : test des rappels\nℹ️ /aide : aide")
+    elif texte in ["/planning", "planning", "/aujourdhui", "aujourdhui", "aujourd'hui", "/aujourd'hui"]:
+        envoyer_message(chat_id, charger_cours_du_jour(today))
+    elif texte in ["/demain", "demain"]:
+        envoyer_message(chat_id, charger_cours_du_jour(today + datetime.timedelta(days=1)))
+    elif texte in ["/rappel", "rappel", "/test"]:
+        envoyer_message(chat_id, f"🔔 Test réussi. Les rappels sont configurés toutes les {REMINDER_HOURS} heures.")
+    elif texte in ["/aide", "aide", "/help", "help"]:
+        envoyer_message(chat_id, "📚 *Commandes*\n\n/planning\n/demain\n/rappel\n/aide")
+    else:
+        envoyer_message(chat_id, "Je n'ai pas compris. Utilise /planning, /demain ou /aide.")
+
+
+def gestionnaire_telegram():
+    # Ne pas quitter définitivement si Telegram est temporairement indisponible.
+    offset = None
+    print("Gestionnaire Telegram démarré")
+
+    while True:
+        try:
+            if not TOKEN:
+                print("TELEGRAM_TOKEN manquant. Nouvelle tentative dans 60 secondes.")
+                time.sleep(60)
+                continue
+
+            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+            params = {"timeout": 30}
+            if offset is not None:
+                params["offset"] = offset
+
+            r = requests.get(url, params=params, timeout=40)
+            data = r.json()
+            if not data.get("ok"):
+                print("Erreur getUpdates :", data)
+                time.sleep(5)
+                continue
+
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                message = update.get("message")
+                if not message or "text" not in message:
                     continue
+                chat_id = message["chat"]["id"]
+                traiter_commande(chat_id, message["text"])
 
-        if ligne_semaine is None:
-            return f"Aucun cours trouvé dans le planning pour la date du {date_cible.strftime('%d/%m/%Y')}."
+        except requests.exceptions.Timeout:
+            continue
+        except Exception as e:
+            print("Erreur boucle Telegram :", e)
+            time.sleep(5)
 
-        # Mapping des colonnes pour les jours
-        jours_colonnes = {
-            0: (1, 8),    # Lundi
-            1: (9, 17),   # Mardi
-            2: (18, 24),  # Mercredi
-            3: (25, 32),  # Jeudi
-            4: (33, 40)   # Vendredi
-        }
 
-        jour_index = date_cible.weekday()
-        if jour_index not in jours_colonnes:
-            return f"Pas de cours le {date_cible.strftime('%A %d/%m/%Y')} (week-end)."
-
-        col_start, col_end = jours_colonnes[jour_index]
-        row_s1 = df.iloc[ligne_semaine]
-        hours_row = df.iloc[1]
-
-        cours_liste = []
-        for col_idx in range(col_start, col_end + 1):
-            val = row_s1.iloc[col_idx]
-            if pd.notna(val) and str(val).strip() != "":
-                horaire = hours_row.iloc[col_idx]
-                horaire_str = str(horaire) if pd.notna(horaire) else "Horaire non précisé"
-                
-                # Nettoyage du texte du cours
-                details = str(val).strip()
-                cours_liste.append(f"⏰ **{horaire_str}**\n{details}")
-
-        if not cours_liste:
-            return f"🎉 Aucun cours prévu le {date_cible.strftime('%d/%m/%Y')} !"
-
-        nom_jour = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"][jour_index]
-        reponse = f"📅 **Planning du {nom_jour} {date_cible.strftime('%d/%m/%Y')} :**\n\n"
-        reponse += "\n\n-------------------\n\n".join(cours_liste)
-        return reponse
-
-    except Exception as e:
-        return f"Erreur lors de la lecture du fichier Excel : {e}"
-"""
-def gestionnaire_telegram():
-    if not TOKEN:
-        print("ERREUR : TELEGRAM_TOKEN non défini !")
+def envoyer_rappel_automatique():
+    utilisateurs = charger_utilisateurs()
+    if not utilisateurs:
+        print("Aucun utilisateur enregistré pour les rappels")
         return
 
-    offset = None
-    chat_ids_enregistres = set()
+    heure = maintenant().strftime("%H:%M")
+    message = f"🔔 *RAPPEL AUTOMATIQUE*\n\nIl est {heure}. N'oublie pas de consulter ton planning.\n\n📅 /planning\n➡️ /demain"
+    for chat_id in utilisateurs:
+        envoyer_message(chat_id, message)
+        time.sleep(0.5)
+
+
+def envoyer_planning_demain():
+    utilisateurs = charger_utilisateurs()
+    demain = maintenant().date() + datetime.timedelta(days=1)
+    planning = charger_cours_du_jour(demain)
+    message = f"🌙 *TON PLANNING DE DEMAIN*\n\n{planning}"
+    for chat_id in utilisateurs:
+        envoyer_message(chat_id, message)
+        time.sleep(0.5)
+
+
+def gestionnaire_rappels():
+    print("Gestionnaire des rappels démarré")
+    schedule.every(REMINDER_HOURS).hours.do(envoyer_rappel_automatique)
+    schedule.every().day.at("20:00").do(envoyer_planning_demain)
 
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-            params = {"timeout": 10, "offset": offset}
-            res = requests.get(url, params=params).json()
-
-            if res.get("ok") and res.get("result"):
-                for update in res["result"]:
-                    offset = update["update_id"] + 1
-
-                    if "message" in update and "text" in update["message"]:
-                        chat_id = update["message"]["chat"]["id"]
-                        chat_ids_enregistres.add(chat_id)
-                        texte = update["message"]["text"].strip().lower()
-
-                        aujourdhui = datetime.date.today()
-
-                        if texte in ["/aujourdhui", "aujourdhui", "planning", "/planning", "/start"]:
-                            msg = charger_cours_du_jour(aujourdhui)
-                            envoyer_message(chat_id, msg)
-
-                        elif texte in ["/demain", "demain"]:
-                            demain = aujourdhui + datetime.timedelta(days=1)
-                            msg = charger_cours_du_jour(demain)
-                            envoyer_message(chat_id, msg)
-
-                        elif "sport" in texte:
-                            envoyer_message(chat_id, "🏋️ **Idée Sport :** 45 min de musculation / cardio !")
-                        elif "repas" in texte or "plat" in texte:
-                            envoyer_message(chat_id, "🍲 **Idée Repas :** Poulet riz légumes.")
-                        else:
-                            envoyer_message(chat_id, "Tape **/aujourdhui** ou **/demain** pour voir ton planning complet.")
-
+            schedule.run_pending()
         except Exception as e:
-            print(f"Erreur Telegram : {e}")
+            print("Erreur système rappel :", e)
+        time.sleep(10)
 
-        time.sleep(2)
 
-"""
+def demarrer_services():
+    print("=" * 50)
+    print("DEMARRAGE DU BOT PLANNING")
+    print("=" * 50)
+    print("Planning trouvé :", os.path.exists(EXCEL_PATH))
+    print("Token présent :", bool(TOKEN))
 
-def gestionnaire_telegram():
-    if not TOKEN:
-        print("ERREUR : TELEGRAM_TOKEN non défini !")
-        return
+    threading.Thread(target=gestionnaire_telegram, daemon=True, name="TelegramThread").start()
+    threading.Thread(target=gestionnaire_rappels, daemon=True, name="ReminderThread").start()
 
-    offset = None
-    print("Bot Telegram prêt à recevoir des commandes.")
 
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-            # Un timeout court de 5s pour ne pas bloquer la boucle
-            params = {"timeout": 5, "offset": offset}
-            res = requests.get(url, params=params, timeout=10).json()
+# Démarre les services une seule fois, y compris avec gunicorn.
+demarrer_services()
 
-            if res.get("ok") and res.get("result"):
-                for update in res["result"]:
-                    offset = update["update_id"] + 1
-
-                    if "message" in update and "text" in update["message"]:
-                        chat_id = update["message"]["chat"]["id"]
-                        texte = update["message"]["text"].strip().lower()
-
-                        aujourdhui = datetime.date.today()
-
-                        if texte in ["/aujourdhui", "aujourdhui", "planning", "/planning", "/start"]:
-                            msg = charger_cours_du_jour(aujourdhui)
-                            envoyer_message(chat_id, msg)
-
-                        elif texte in ["/demain", "demain"]:
-                            demain = aujourdhui + datetime.timedelta(days=1)
-                            msg = charger_cours_du_jour(demain)
-                            envoyer_message(chat_id, msg)
-
-                        else:
-                            envoyer_message(chat_id, "Tape **planning** ou **demain** pour voir tes cours.")
-
-        except Exception as e:
-            print(f"Erreur d'attente Telegram : {e}")
-
-        time.sleep(1)
-
-# Lancement du bot
-threading.Thread(target=gestionnaire_telegram, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)

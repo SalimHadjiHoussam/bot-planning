@@ -1,18 +1,33 @@
+import os
 import requests
 
-TOKEN = "8689345394:AAGnTvrCBtLBNqNC1uQy-ZZUnYX9umZU0eg"
-CHAT_ID = "5962735174"
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# 1. Vérification du Token auprès de Telegram
-res_me = requests.get(f"https://api.telegram.org/bot{TOKEN}/getMe").json()
-print("1. Résultat Bot Telegram :", res_me)
+print("=" * 40)
+print("TEST DU BOT TELEGRAM")
+print("=" * 40)
 
-# 2. Envoi d'un message direct
-res_msg = requests.post(
-    f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-    json={
-        "chat_id": CHAT_ID,
-        "text": "👋 Test direct du bot ! Est-ce que tu me reçois ?",
-    },
-).json()
-print("2. Résultat Envoi Message :", res_msg)
+if not TOKEN:
+    print("ERREUR : TELEGRAM_TOKEN est introuvable")
+    raise SystemExit(1)
+
+if not CHAT_ID:
+    print("ERREUR : TELEGRAM_CHAT_ID est introuvable")
+    raise SystemExit(1)
+
+try:
+    r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getMe", timeout=15)
+    data = r.json()
+    print("getMe :", data)
+    if not data.get("ok"):
+        raise SystemExit(1)
+
+    r = requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": "🧪 TEST RÉUSSI : le bot Telegram fonctionne."},
+        timeout=15,
+    )
+    print("sendMessage :", r.json())
+except Exception as e:
+    print("Erreur :", e)
