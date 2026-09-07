@@ -2,13 +2,29 @@ import datetime
 import json
 import os
 import re
+import threading
 import time
+from flask import Flask
 import pandas as pd
 import requests
 import schedule
 
+# Serveur Flask pour maintenir le Web Service Render actif
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Bot Telegram En Ligne !", 200
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
 # ================= CONFIGURATION =================
-TOKEN = "8689345394:AAGnTvrCBtLBNqNC1uQy-ZZUnYX9umZUOeg"
+TOKEN = "8689345394:AAGnTvrCBtLBNqNC1uQy-ZZUnYX9umZU0eg"
 CHAT_ID = "5962735174"
 EXCEL_FILE = "planning.xlsx"
 CONFIG_FILE = "user_config.json"
@@ -44,87 +60,12 @@ def envoyer_telegram(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload)
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
         print(f"Erreur d'envoi Telegram : {e}")
 
 
-
-def verifier_commandes_telegram():
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-    try:
-        # On ajoute timeout=5 pour ne pas bloquer si la connexion tarde
-        res = requests.get(url, timeout=5).json()
-        if not res.get("result"):
-            return
-
-        for update in res["result"]:
-            message = update.get("message", {})
-            text = message.get("text", "")
-            update_id = update.get("update_id")
-
-            if text.startswith("/groupe"):
-                parts = text.split()
-                if len(parts) > 1:
-                    grp = parts[1].upper()
-                    cfg = charger_config()
-                    cfg["groupe"] = grp
-                    sauvegarder_config(cfg)
-                    envoyer_telegram(
-                        f"✅ *Groupe mis à jour !*\nVous recevrez les notifications pour le **Groupe {grp}** ainsi que tous les CM."
-                    )
-                else:
-                    envoyer_telegram(
-                        "ℹ️ Usage : `/groupe 1`, `/groupe 2` ou `/groupe TOUT`."
-                    )
-
-            elif text.startswith("/examen"):
-                try:
-                    parts = text.split(" ", 3)
-                    date_ex, heure_ex, nom_ex = parts[1], parts[2], parts[3]
-                    examens = charger_examens()
-                    examens.append(
-                        {"date": date_ex, "heure": heure_ex, "nom": nom_ex}
-                    )
-                    sauvegarder_examens(examens)
-                    envoyer_telegram(
-                        f"🚨 *Examen/CC ajouté !*\n📌 *{nom_ex}*\n📅 Date : {date_ex} à {heure_ex}"
-                    )
-                except Exception:
-                    envoyer_telegram(
-                        "⚠️ Format attendu : `/examen AAAA-MM-JJ HH:MM Nom_Examen`\nExemple : `/examen 2026-09-25 14:00 Statistique`"
-                    )
-
-            elif text == "/examens_liste":
-                examens = charger_examens()
-                if not examens:
-                    envoyer_telegram(
-                        "📝 Aucun examen ou CC enregistré pour le moment."
-                    )
-                else:
-                    msg = "📝 *LISTE DES EXAMENS & CC :*\n\n"
-                    for ex in examens:
-                        msg += f"• *{ex['date']} à {ex['heure']}* : {ex['nom']}\n"
-                    envoyer_telegram(msg)
-
-            # Valider le message traité
-            requests.get(f"{url}?offset={update_id + 1}", timeout=5)
-    except requests.exceptions.RequestException as e:
-        # En cas de baisse de débit ou coupure réseau, on ignore poliment l'erreur
-        print(f"Connexion réseau instable (réessai au prochain cycle) : {e}")
-    except Exception as e:
-        print(f"Erreur lors de la vérification des commandes : {e}")
-
-
-
-
-
-
-
-
-
 def charger_et_parser_planning():
-    """Lit et transforme la grille complexe de l'Excel en DataFrame structurée."""
     if not os.path.exists(EXCEL_FILE):
         return pd.DataFrame()
 
@@ -204,7 +145,6 @@ def charger_et_parser_planning():
             )
             date_str = course_date.strftime("%Y-%m-%d")
 
-            # Extraction détails cours
             lines = [
                 line.strip() for line in cell_val.split("\n") if line.strip()
             ]
@@ -266,34 +206,154 @@ def filtrer_cours(df):
     ]
 
 
-def verifier_cours_imminents():
-    maintenant = datetime.datetime.now()
-    dans_30_min = maintenant + datetime.timedelta(minutes=30)
-    date_str = dans_30_min.strftime("%Y-%m-%d")
-    heure_str = dans_30_min.strftime("%H:%M")
-
+def verifier_commandes_telegram():
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
     try:
-        df = charger_et_parser_planning()
-        cours = filtrer_cours(df)
-        if cours.empty:
+        res = requests.get(url, timeout=5).json()
+        if not res.get("result"):
             return
 
-        cours = cours[
+        for update in res["result"]:
+            message = update.get("message", {})
+            text = message.get("text", "")
+            update_id = update.get("update_id")
+
+            if text.startswith("/groupe"):
+                parts = text.split()
+                if len(parts) > 1:
+                    grp = parts[1].upper()
+                    cfg = charger_config()
+                    cfg["groupe"] = grp
+                    sauvegarder_config(cfg)
+                    envoyer_telegram(
+                        f"✅ *Groupe mis à jour !*\nVous recevrez les notifications pour le **Groupe {grp}** ainsi que tous les CM."
+                    )
+                else:
+                    envoyer_telegram(
+                        "ℹ️ Usage : `/groupe 1`, `/groupe 2` ou `/groupe TOUT`."
+                    )
+
+            elif text == "/demain":
+                demain = datetime.datetime.now() + datetime.timedelta(days=1)
+                date_str = demain.strftime("%Y-%m-%d")
+                df = charger_et_parser_planning()
+                cours = filtrer_cours(df)
+                if not cours.empty:
+                    cours = cours[cours["Date"].astype(str) == date_str]
+
+                cfg = charger_config()
+                grp_txt = (
+                    f" (Groupe {cfg['groupe']})"
+                    if cfg["groupe"] != "TOUT"
+                    else ""
+                )
+
+                if cours.empty:
+                    msg = f"🎉 *Demain ({date_str})* : Aucun cours prévu !"
+                else:
+                    msg = f"📚 *PROGRAMME DE DEMAIN{grp_txt}* ({date_str}) :\n\n"
+                    for _, row in cours.iterrows():
+                        msg += f"• *{row['Heure_Debut']} - {row['Heure_Fin']}* : {row['Matiere']} ({row['Type']}) — Salle {row['Salle']}\n"
+                envoyer_telegram(msg)
+
+            elif text == "/aujourdhui":
+                aujourdhui = datetime.datetime.now()
+                date_str = aujourdhui.strftime("%Y-%m-%d")
+                df = charger_et_parser_planning()
+                cours = filtrer_cours(df)
+                if not cours.empty:
+                    cours = cours[cours["Date"].astype(str) == date_str]
+
+                cfg = charger_config()
+                grp_txt = (
+                    f" (Groupe {cfg['groupe']})"
+                    if cfg["groupe"] != "TOUT"
+                    else ""
+                )
+
+                if cours.empty:
+                    msg = f"🎉 *Aujourd'hui ({date_str})* : Aucun cours prévu !"
+                else:
+                    msg = f"📚 *PROGRAMME D'AUJOURD'HUI{grp_txt}* ({date_str}) :\n\n"
+                    for _, row in cours.iterrows():
+                        msg += f"• *{row['Heure_Debut']} - {row['Heure_Fin']}* : {row['Matiere']} ({row['Type']}) — Salle {row['Salle']}\n"
+                envoyer_telegram(msg)
+
+            elif text.startswith("/examen"):
+                try:
+                    parts = text.split(" ", 3)
+                    date_ex, heure_ex, nom_ex = parts[1], parts[2], parts[3]
+                    examens = charger_examens()
+                    examens.append(
+                        {"date": date_ex, "heure": heure_ex, "nom": nom_ex}
+                    )
+                    sauvegarder_examens(examens)
+                    envoyer_telegram(
+                        f"🚨 *Examen/CC ajouté !*\n📌 *{nom_ex}*\n📅 Date : {date_ex} à {heure_ex}"
+                    )
+                except Exception:
+                    envoyer_telegram(
+                        "⚠️ Format attendu : `/examen AAAA-MM-JJ HH:MM Nom_Examen`\nExemple : `/examen 2026-09-25 14:00 Statistique`"
+                    )
+
+            elif text == "/examens_liste":
+                examens = charger_examens()
+                if not examens:
+                    envoyer_telegram(
+                        "📝 Aucun examen ou CC enregistré pour le moment."
+                    )
+                else:
+                    msg = "📝 *LISTE DES EXAMENS & CC :*\n\n"
+                    for ex in examens:
+                        msg += f"• *{ex['date']} à {ex['heure']}* : {ex['nom']}\n"
+                    envoyer_telegram(msg)
+
+            requests.get(f"{url}?offset={update_id + 1}", timeout=5)
+    except requests.exceptions.RequestException as e:
+        print(f"Réseau instable (réessai au prochain cycle) : {e}")
+    except Exception as e:
+        print(f"Erreur lors de la vérification des commandes : {e}")
+
+
+
+def verifier_cours_imminents():
+    maintenant = datetime.datetime.now()
+    df = charger_et_parser_planning()
+    cours = filtrer_cours(df)
+    if cours.empty:
+        return
+
+    # Définition des 3 créneaux de rappel (60 min, 30 min et 10 min)
+    rappels = [
+        (60, "🔔 *Dans 1 heure*"),
+        (30, "⏳ *Dans 30 minutes*"),
+        (10, "🚨 *Dans 10 minutes*"),
+    ]
+
+    for minutes_avant, titre in rappels:
+        cible = maintenant + datetime.timedelta(minutes=minutes_avant)
+        date_str = cible.strftime("%Y-%m-%d")
+        heure_str = cible.strftime("%H:%M")
+
+        cours_trouves = cours[
             (cours["Date"].astype(str) == date_str)
             & (cours["Heure_Debut"].astype(str) == heure_str)
         ]
 
-        for _, row in cours.iterrows():
+        for _, row in cours_trouves.iterrows():
             msg = (
-                f"🔔 *RAPPEL DE COURS (Dans 30 min)* 🔔\n\n"
+                f"{titre} :\n\n"
                 f"📖 *Matière :* {row['Matiere']}\n"
                 f"🏷️ *Type :* {row['Type']}\n"
                 f"⏰ *Horaire :* {row['Heure_Debut']} - {row['Heure_Fin']}\n"
                 f"📍 *Salle :* {row['Salle']}"
             )
             envoyer_telegram(msg)
-    except Exception as e:
-        print(f"Erreur vérification cours imminents : {e}")
+
+
+
+
+
 
 
 def rappel_du_soir():
@@ -328,15 +388,14 @@ def rappel_du_soir():
         print(f"Erreur rappel du soir : {e}")
 
 
+# Démarrer le serveur HTTP Flask dans un thread séparé
+threading.Thread(target=run_flask, daemon=True).start()
+
 # Programmateurs de tâches
 schedule.every(1).minutes.do(verifier_cours_imminents)
 schedule.every(5).seconds.do(verifier_commandes_telegram)
 schedule.every().day.at("20:00").do(rappel_du_soir)
 
-# Message de lancement
-envoyer_telegram("✅ *Bot Planning démarré avec succès !*")
-
-# Boucle d'exécution
 while True:
     schedule.run_pending()
     time.sleep(1)
