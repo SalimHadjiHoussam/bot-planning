@@ -9,6 +9,13 @@ import pandas as pd
 import requests
 import schedule
 
+# ================= CONFIGURATION =================
+TOKEN = "8689345394:AAGnTvrCBtLBNqNC1uQy-ZZUnYX9umZU0eg"
+CHAT_ID = "5962735174"
+EXCEL_FILE = "planning.xlsx"
+CONFIG_FILE = "user_config.json"
+EXAMS_FILE = "examens.json"
+# =================================================
 
 # ================= SERVEUR FLASK (POUR RENDER) =================
 app = Flask(__name__)
@@ -24,27 +31,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
-# Lancer Flask en arrière-plan
-threading.Thread(target=run_flask, daemon=True).start()
-
-# ================= DÉMARRAGE DU BOT TELEGRAM =================
-if __name__ == "__main__":
-    print("Démarrage du bot...")
-    # Envoyer un message au démarrage si nécessaire
-    # ...
-    # Lancer la boucle d'écoute Telegram (OBLIGATOIRE)
-    bot.infinity_polling(skip_pending=True)
-
-
-# ================= CONFIGURATION =================
-TOKEN = "8689345394:AAGnTvrCBtLBNqNC1uQy-ZZUnYX9umZU0eg"
-CHAT_ID = "5962735174"
-EXCEL_FILE = "planning.xlsx"
-CONFIG_FILE = "user_config.json"
-EXAMS_FILE = "examens.json"
-# =================================================
-
-
+# ================= FONCTIONS AUXILIAIRES =================
 def charger_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
@@ -328,7 +315,6 @@ def verifier_commandes_telegram():
         print(f"Erreur lors de la vérification des commandes : {e}")
 
 
-
 def verifier_cours_imminents():
     maintenant = datetime.datetime.now()
     df = charger_et_parser_planning()
@@ -336,7 +322,6 @@ def verifier_cours_imminents():
     if cours.empty:
         return
 
-    # Définition des 3 créneaux de rappel (60 min, 30 min et 10 min)
     rappels = [
         (60, "🔔 *Dans 1 heure*"),
         (30, "⏳ *Dans 30 minutes*"),
@@ -362,11 +347,6 @@ def verifier_cours_imminents():
                 f"📍 *Salle :* {row['Salle']}"
             )
             envoyer_telegram(msg)
-
-
-
-
-
 
 
 def rappel_du_soir():
@@ -401,14 +381,17 @@ def rappel_du_soir():
         print(f"Erreur rappel du soir : {e}")
 
 
-# Démarrer le serveur HTTP Flask dans un thread séparé
-threading.Thread(target=run_flask, daemon=True).start()
+# ================= INITIALISATION ET BOUCLE PRINCIPALE =================
+if __name__ == "__main__":
+    print("Démarrage du serveur Flask...")
+    threading.Thread(target=run_flask, daemon=True).start()
 
-# Programmateurs de tâches
-schedule.every(1).minutes.do(verifier_cours_imminents)
-schedule.every(5).seconds.do(verifier_commandes_telegram)
-schedule.every().day.at("20:00").do(rappel_du_soir)
+    print("Configuration des tâches planifiées...")
+    schedule.every(1).minutes.do(verifier_cours_imminents)
+    schedule.every(5).seconds.do(verifier_commandes_telegram)
+    schedule.every().day.at("20:00").do(rappel_du_soir)
 
-while True:
-    schedule.run_pending()
-    time.sleep(1)
+    print("Bot opérationnel !")
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
