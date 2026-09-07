@@ -9,7 +9,8 @@ import pandas as pd
 import requests
 import schedule
 
-# Serveur Flask pour maintenir le Web Service Render actif
+
+# ================= SERVEUR FLASK (RENDER) =================
 app = Flask(__name__)
 
 
@@ -19,8 +20,14 @@ def home():
 
 
 def run_flask():
+    # Render définit automatiquement la variable d'environnement PORT
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+
+# Démarrage immédiat du serveur HTTP
+threading.Thread(target=run_flask, daemon=True).start()
+# =========================================================
 
 
 # ================= CONFIGURATION =================
