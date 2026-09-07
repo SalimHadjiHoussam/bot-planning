@@ -90,7 +90,7 @@ def charger_cours_du_jour(date_cible):
 
     except Exception as e:
         return f"Erreur lors de la lecture du fichier Excel : {e}"
-
+"""
 def gestionnaire_telegram():
     if not TOKEN:
         print("ERREUR : TELEGRAM_TOKEN non défini !")
@@ -136,6 +136,50 @@ def gestionnaire_telegram():
             print(f"Erreur Telegram : {e}")
 
         time.sleep(2)
+
+"""
+
+def gestionnaire_telegram():
+    if not TOKEN:
+        print("ERREUR : TELEGRAM_TOKEN non défini !")
+        return
+
+    offset = None
+    print("Bot Telegram prêt à recevoir des commandes.")
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+            # Un timeout court de 5s pour ne pas bloquer la boucle
+            params = {"timeout": 5, "offset": offset}
+            res = requests.get(url, params=params, timeout=10).json()
+
+            if res.get("ok") and res.get("result"):
+                for update in res["result"]:
+                    offset = update["update_id"] + 1
+
+                    if "message" in update and "text" in update["message"]:
+                        chat_id = update["message"]["chat"]["id"]
+                        texte = update["message"]["text"].strip().lower()
+
+                        aujourdhui = datetime.date.today()
+
+                        if texte in ["/aujourdhui", "aujourdhui", "planning", "/planning", "/start"]:
+                            msg = charger_cours_du_jour(aujourdhui)
+                            envoyer_message(chat_id, msg)
+
+                        elif texte in ["/demain", "demain"]:
+                            demain = aujourdhui + datetime.timedelta(days=1)
+                            msg = charger_cours_du_jour(demain)
+                            envoyer_message(chat_id, msg)
+
+                        else:
+                            envoyer_message(chat_id, "Tape **planning** ou **demain** pour voir tes cours.")
+
+        except Exception as e:
+            print(f"Erreur d'attente Telegram : {e}")
+
+        time.sleep(1)
 
 # Lancement du bot
 threading.Thread(target=gestionnaire_telegram, daemon=True).start()
