@@ -105,7 +105,9 @@ def charger_cours_du_jour(date_cible):
 
     try:
         # On lit la première feuille par défaut pour rester compatible avec ton ancien fichier.
-        df = pd.read_excel(EXCEL_PATH, header=None)
+        df = pd.read_excel( EXCEL_PATH,
+                            sheet_name="Semestre 1 - P1 - P2",
+                            header=None)
     except Exception as e:
         return f"Impossible de lire le planning.xlsx : {e}"
 
