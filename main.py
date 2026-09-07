@@ -10,7 +10,7 @@ import requests
 import schedule
 
 
-# ================= SERVEUR FLASK (RENDER) =================
+# ================= SERVEUR FLASK (POUR RENDER) =================
 app = Flask(__name__)
 
 
@@ -20,14 +20,20 @@ def home():
 
 
 def run_flask():
-    # Render définit automatiquement la variable d'environnement PORT
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
-# Démarrage immédiat du serveur HTTP
+# Lancer Flask en arrière-plan
 threading.Thread(target=run_flask, daemon=True).start()
-# =========================================================
+
+# ================= DÉMARRAGE DU BOT TELEGRAM =================
+if __name__ == "__main__":
+    print("Démarrage du bot...")
+    # Envoyer un message au démarrage si nécessaire
+    # ...
+    # Lancer la boucle d'écoute Telegram (OBLIGATOIRE)
+    bot.infinity_polling(skip_pending=True)
 
 
 # ================= CONFIGURATION =================
